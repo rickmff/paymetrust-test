@@ -1,0 +1,13 @@
+/* Order matters: Tailwind first, then HeroUI's theme and component styles. */
+@import "tailwindcss";
+@import "@heroui/styles";
+
+/* HeroUI is themed with CSS variables. By default a link has the text color
+   and only shows on hover; one token makes links recognizable everywhere. */
+:root {
+  --link: var(--accent);
+}
+
+body {
+  @apply min-h-dvh bg-background text-foreground antialiased;
+}

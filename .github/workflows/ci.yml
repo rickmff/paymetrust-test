@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  # Fast feedback: static checks, then unit and integration tests.
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: api/go.mod
+          cache: false # the API has no dependencies to cache
+      - run: npm ci
+      # Vite only strips types; it never checks them. This step is what does.
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm test
+      - run: go -C api vet ./...
+
+  # Components on their own, in three browsers, through Storybook. No API.
+  components:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium webkit firefox
+      # The screenshots in visual-tests/__screenshots__ were taken on macOS, and
+      # text is not drawn the same on Linux. Until Linux baselines are committed
+      # (see "Screenshots" in the README), only the behaviour tests run here.
+      - run: npm run visual -- --grep-invert @screenshot
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: components-report
+          path: |
+            playwright-report/
+            node_modules/.cache/playwright/
+          retention-days: 7
+
+  # Slower: the real browser against the production build and the Go API.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: api/go.mod
+          cache: false
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      # playwright.config.ts starts the API and the built app (CI=true is set by GitHub).
+      - run: npm run e2e
+      # Keep the HTML report and the traces even when the tests fail: that is when they matter.
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            node_modules/.cache/playwright/
+          retention-days: 7
