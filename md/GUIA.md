@@ -61,7 +61,7 @@ biblioteca padrão do Go e guarda os dados em memória.
 
 1. Rotas com método e parâmetro no padrão: `"GET /api/transactions/{id}"`.
 2. Um formato de erro para tudo: `{ status, code, detail, errors: [{ field, message }] }`.
-3. Toda lista responde `{ items, next_cursor }`. O cursor é a chave de ordenação do último item, `(valor, id)`, mais o `sort` a que pertence.
+3. Toda lista responde `{ items, next_cursor }`. O cursor é a chave de ordenação do último item, `(valores, id)` com um valor por campo do `sort`, mais o `sort` a que pertence.
 4. Dinheiro é `int64` na menor unidade da moeda, sempre com `currency`.
 5. Middleware `can("payout:approve")` responde 401 ou 403. É a fonte da verdade do RBAC.
 6. `POST /payouts` exige o header `Idempotency-Key`.
@@ -313,6 +313,7 @@ biblioteca padrão do Go e guarda os dados em memória.
 - `as` aparece só duas vezes no código do app, as duas com comentário: um que alarga o tipo (`null as string | null`, seguro) e um no `FormTextField`, onde o TypeScript não acompanha o genérico.
 - `satisfies` mantém os literais; anotação `Record<...>` alarga para `string[]`. Veja [operators.ts](src/lib/operators.ts).
 - `sortable` numa coluna do `DataTable` vira um botão no cabeçalho (com `aria-sort`). A tabela só mostra a ordem e avisa o clique: quem ordena é a página, ou o servidor.
+- Clique ordena só por aquela coluna. Shift+clique junta a coluna à ordenação, como desempate: de novo inverte, na terceira vez tira. A regra é uma função pura, `nextSort`, em [sort.ts](src/lib/sort.ts). O `aria-sort` fica só no primeiro cabeçalho; os outros mostram um número e dizem a posição em texto para o leitor de tela.
 - Não abstraia cedo: extraia quando o padrão aparecer pela terceira vez.
 
 **Na entrevista** (Doc 1 · Q7, Doc 2 · T3, T6, T10)
@@ -336,7 +337,7 @@ biblioteca padrão do Go e guarda os dados em memória.
 2. Os filtros entram na `queryKey`. Filtro novo, entrada nova no cache.
 3. `useInfiniteQuery`: `getNextPageParam` devolve o `next_cursor` do servidor.
 4. `placeholderData: keepPreviousData` mantém as linhas antigas enquanto as novas carregam.
-5. Ordenação: `?sort=-amount` (o `-` é decrescente) na URL, na `queryKey` e na API. Passa por `TransactionSortSchema`, como os filtros.
+5. Ordenação: `?sort=-amount` (o `-` é decrescente) na URL, na `queryKey` e na API. A vírgula combina colunas: `?sort=-amount,created_at` é o maior valor primeiro e, entre valores iguais, o mais antigo. Passa por `TransactionSortSchema`, como os filtros.
 
 **Atenção**
 
@@ -345,8 +346,9 @@ biblioteca padrão do Go e guarda os dados em memória.
 - Quatro estados: skeleton, vazio sem dados, vazio com filtros (com "Clear filters") e erro.
 - Se um refetch falha, os últimos dados bons continuam na tela, com o erro acima.
 - Valores à direita com `tabular-nums`. Status com ícone e texto, nunca só cor.
-- Com paginação, quem ordena é o servidor: o navegador só tem as páginas já carregadas. O id desempata, e o cursor guarda o `sort`: cursor de outra ordenação é 400.
-- Em Payouts a lista chega inteira numa resposta, então lá a ordenação é no navegador ([sort.ts](src/lib/sort.ts)), sem request.
+- Com paginação, quem ordena é o servidor: o navegador só tem as páginas já carregadas. O id desempata no fim, depois de todos os campos do `sort`, e o cursor guarda o `sort`: cursor de outra ordenação é 400.
+- Payouts segue o mesmo padrão: páginas com cursor e ordenação no servidor, só por `id` e `amount`. Ordenar por qualquer coluna era possível quando a lista cabia inteira no navegador; com páginas, cada ordenação é trabalho do servidor (num banco, um índice).
+- O seed tem 50 000 transações e 1 004 payouts: nenhuma das listas cabe numa resposta. Um payout pendente pode estar na página 4, por isso a lista filtra por status, e o número do dashboard abre a lista já filtrada.
 - TanStack Table ficou de fora de propósito: quem pagina, filtra e ordena é o servidor, e o cabeçalho ordenável já vem do HeroUI (React Aria). Ele entra quando houver seleção ou colunas configuráveis no cliente.
 
 **Na entrevista** (Doc 1 · Q4, Q5)
@@ -488,7 +490,7 @@ biblioteca padrão do Go e guarda os dados em memória.
 | Unit        | [payouts/schemas.test.ts](src/features/payouts/schemas.test.ts)                            | Valores de borda: 0, 499, 500, 2 000 000, 2 000 001               |
 | Integration | [TransactionsPage.test.tsx](src/features/transactions/TransactionsPage.test.tsx)           | Lista, erro e retry, filtros e ordenação na URL, vazio, cursor    |
 | Integration | [TransactionDetailPage.test.tsx](src/features/transactions/TransactionDetailPage.test.tsx) | Falha com motivo, 404, polling com fake timers                    |
-| Integration | [PayoutsPage.test.tsx](src/features/payouts/PayoutsPage.test.tsx)                          | Uma tela por role, aprovar, rejeitar, 409, 403                    |
+| Integration | [PayoutsPage.test.tsx](src/features/payouts/PayoutsPage.test.tsx)                          | Uma tela por role, aprovar, rejeitar, 409, 403, cursor, filtro    |
 | Integration | [NewPayout.test.tsx](src/features/payouts/new/NewPayout.test.tsx)                          | Valor zero, payload, 422 no campo, mesma chave no retry, rascunho |
 | Integration | [auth.test.tsx](src/features/auth/auth.test.tsx)                                           | Redirect e volta, credencial errada, logout, 401 global           |
 

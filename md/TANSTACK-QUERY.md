@@ -181,7 +181,7 @@ As chaves são hierárquicas:
 | `["summary"]`                                  | o resumo do dashboard            |
 | `["transactions", "list", filtros, ordenação]` | uma vista da lista de transações |
 | `["transactions", "detail", id]`               | uma transação                    |
-| `["payouts", "list"]`                          | a lista de payouts               |
+| `["payouts", "list", filtros, ordenação]`      | uma vista da lista de payouts    |
 | `["payouts", "quote", valor]`                  | a taxa para um valor             |
 
 Invalidar `["payouts"]` apanha a lista e as cotações de uma vez. E como os filtros fazem parte da chave, um filtro novo é uma entrada nova no cache.
@@ -210,7 +210,9 @@ Em [TransactionsPage.tsx](../src/features/transactions/TransactionsPage.tsx):
 - O botão "Retry" sabe o que falhou: se foi a página seguinte, pede só essa; se foi a lista, pede a lista.
 - Depois de uma atualização falhada, as últimas linhas boas continuam na tela, por baixo do erro.
 
-A lista de payouts é o caso contrário. Em [payouts/api.ts](../src/features/payouts/api.ts), `payoutQueries.list` segue o cursor até ao fim e devolve todos os payouts de uma vez. A página ordena no navegador, e um approver não pode deixar de ver um payout por ele estar numa segunda página.
+A lista de payouts funciona da mesma maneira. Em [payouts/api.ts](../src/features/payouts/api.ts), `payoutQueries.list` também é uma `infiniteQueryOptions`, com o filtro de status e a ordenação na chave. São mais de mil payouts, por isso pedir todos de uma vez deixou de ser opção. Um approver não pode deixar de ver um payout por ele estar numa página distante: quem garante isso é o filtro por status, não carregar a lista inteira.
+
+Depois de uma mutation, invalidar `["payouts"]` volta a pedir todas as páginas já carregadas, uma a seguir à outra.
 
 ### 4.6 O detalhe: polling com intervalo crescente
 
@@ -263,7 +265,7 @@ Em [render.tsx](../src/test/render.tsx), cada teste cria o seu query client, com
 | "a 401 from any request ends the session and asks to sign in again"                   | o 401 tratado num lugar só                    |
 | "keeps asking the API while the payment is pending, and shows the result"             | o polling                                     |
 | "loads the next page with the cursor the server gave"                                 | a paginação por cursor                        |
-| "shows every payout even when the API sends them in pages"                            | a lista de payouts segue o cursor até ao fim  |
+| "loads the next page of payouts with the cursor the server gave"                      | a lista de payouts também vem em páginas      |
 | "approving asks for confirmation and shows the result only after the server confirms" | sem optimistic update                         |
 | "when someone else decided first, shows the conflict and refreshes the list"          | a invalidação depois de um 409                |
 | "a retry after a network failure reuses the same idempotency key"                     | a repetição manual não cria um segundo payout |

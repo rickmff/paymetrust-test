@@ -39,7 +39,10 @@ test("the API refuses a viewer, whatever the UI shows", async ({ apiAs }) => {
 
 test("an approver can't decide a payout they created", async ({ pageAs }) => {
   const page = await pageAs("approver");
-  await page.goto("/payouts");
+  // The list comes in pages, newest first, and other tests keep creating
+  // payouts. Among the ones that wait, oldest first, the seeded payout stays
+  // on the first page whatever they do.
+  await page.goto("/payouts?status=pending_approval&sort=id");
 
   // PO-2003 is seeded as created by the approver herself.
   const own = page.getByRole("row").filter({ hasText: "PO-2003" });

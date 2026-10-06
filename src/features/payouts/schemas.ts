@@ -6,6 +6,7 @@ import {
   OPERATOR_PREFIXES,
   OperatorSchema,
 } from "@/lib/operators";
+import { sortSchema } from "@/lib/sort";
 
 // ---- what the API returns --------------------------------------------------
 
@@ -53,6 +54,28 @@ export const PAYOUT_STATUS = {
   approved: { label: "Approved", tone: "success", icon: "✓" },
   rejected: { label: "Rejected", tone: "danger", icon: "✕" },
 } as const satisfies Record<PayoutStatus, StatusMeta>;
+
+export const PAYOUT_STATUS_OPTIONS = PayoutStatusSchema.options.map(
+  (value) => ({ value, label: PAYOUT_STATUS[value].label }),
+);
+
+/** From the URL, so user input: an invalid value is dropped, not an error. */
+export const PayoutFiltersSchema = z.object({
+  status: PayoutStatusSchema.optional().catch(undefined),
+});
+export type PayoutFilters = z.infer<typeof PayoutFiltersSchema>;
+
+/**
+ * The columns the server sorts by. The list comes in pages, so the browser
+ * never holds every row and can't sort them itself.
+ */
+export const PayoutSortSchema = sortSchema(["id", "amount"]);
+export type PayoutSort = NonNullable<z.infer<typeof PayoutSortSchema>>;
+
+/** Ids count up, so this is newest first. */
+export const DEFAULT_PAYOUT_SORT: PayoutSort = [
+  { column: "id", direction: "descending" },
+];
 
 export const QuoteSchema = z.object({
   amount: MinorUnitsSchema,

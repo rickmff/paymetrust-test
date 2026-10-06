@@ -18,7 +18,7 @@ import {
   type FieldPathByValue,
   type FieldValues,
 } from "react-hook-form";
-import { applyMask, type Mask } from "./mask";
+import { applyMask, type Mask } from "../lib/mask";
 import { Numpad, type NumpadProps } from "./numpad/Numpad";
 
 type FormTextFieldProps<Values extends FieldValues, Output> = {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 )
@@ -157,13 +158,15 @@ func (p *Payout) decide(status, reason string, by *User, at time.Time) {
 }
 
 // seed builds a deterministic data set: same ids and statuses on every start.
+// It is a long history on purpose: far more rows than one response should
+// carry, which is what the pages of a list are for.
 func seed(now time.Time) *store {
 	s := &store{
 		users:       map[string]*User{},
 		sessions:    map[string]string{},
 		idempotency: map[string]idempotent{},
 		nextTxn:     1000,
-		nextPayout:  2000,
+		nextPayout:  1000,
 	}
 
 	for _, u := range []User{
@@ -175,7 +178,14 @@ func seed(now time.Time) *store {
 		s.users[u.Email] = &u
 	}
 
-	operators := []string{"orange_money", "mtn_momo", "wave", "moov_money"}
+	s.seedTransactions(now)
+	s.seedPayouts(now)
+	return s
+}
+
+func (s *store) seedTransactions(now time.Time) {
+	// Seven entries, three of them Orange Money: the operators don't have equal shares.
+	operators := []string{"orange_money", "wave", "mtn_momo", "orange_money", "wave", "moov_money", "orange_money"}
 	amounts := []int64{5000, 12500, 2000, 75000, 30000, 1500, 250000, 10000}
 	reasons := []string{"Insufficient balance", "Customer did not confirm in time", "Operator unavailable"}
 	// Position 0 is the newest transaction, so the first page shows every status.
@@ -184,21 +194,78 @@ func seed(now time.Time) *store {
 		txReversed, txSuccess, txSuccess, txFailed, txSuccess, txSuccess,
 	}
 
-	const total = 36
+	const total = 50_000
+	s.transactions = make([]*Transaction, total)
 	for i := range total { // oldest first, so ids grow with time
 		age := total - 1 - i
 		created := now.Add(-time.Duration(age) * 17 * time.Minute)
 		operator := operators[i%len(operators)]
 		phone := fmt.Sprintf("+225%s%08d", operatorPrefixes[operator][0], 10_000_000+i*1_379_113%90_000_000)
+		// The second term walks 0 to 50 000 in a cycle of its own, so a sort by
+		// amount meets hundreds of values, and equal ones for the id to order.
+		amount := amounts[i%len(amounts)] + 500*int64(i*37%101)
 
-		t := s.newTransaction(amounts[i%len(amounts)], operator, phone, created)
-		if status := pattern[age%len(pattern)]; status != txPending {
+		t := s.newTransaction(amount, operator, phone, created)
+		status := pattern[age%len(pattern)]
+		if status == txPending && age >= 3*len(pattern) {
+			status = txSuccess // an operator answers within minutes: only the newest still wait
+		}
+		if status != txPending {
 			t.settle(status, reasons[i%len(reasons)], created.Add(2*time.Minute))
 		}
-		s.transactions = append([]*Transaction{t}, s.transactions...)
+		s.transactions[age] = t // newest first
+	}
+}
+
+func (s *store) seedPayouts(now time.Time) {
+	maker, approver := s.users["maker@demo.test"], s.users["approver@demo.test"]
+	add := func(in createPayoutRequest, by *User, status, reason string, created time.Time) {
+		payout := s.newPayout(in, by, created)
+		if status != payoutPending {
+			payout.decide(status, reason, approver, created.Add(40*time.Minute))
+		}
+		s.payouts = append(s.payouts, payout)
 	}
 
-	maker, approver := s.users["maker@demo.test"], s.users["approver@demo.test"]
+	recipients := []createPayoutRequest{
+		{Operator: "orange_money", RecipientName: "Ibrahim Traoré", RecipientPhone: "+2250701020304"},
+		{Operator: "mtn_momo", RecipientName: "Mariam Ouattara", RecipientPhone: "+2250505060708"},
+		{Operator: "wave", RecipientName: "Yao Kouassi", RecipientPhone: "+2250709080706"},
+		{Operator: "moov_money", RecipientName: "Aminata Bamba", RecipientPhone: "+2250102030405"},
+		{Operator: "orange_money", RecipientName: "Adjoua N'Guessan", RecipientPhone: "+2250748152336"},
+		{Operator: "wave", RecipientName: "Sékou Coulibaly", RecipientPhone: "+2250566778899"},
+		{Operator: "mtn_momo", RecipientName: "Fanta Cissé", RecipientPhone: "+2250554321098"},
+		{Operator: "orange_money", RecipientName: "Koffi Yao", RecipientPhone: "+2250777889900"},
+		{Operator: "moov_money", RecipientName: "Rokia Sangaré", RecipientPhone: "+2250143658709"},
+		{Operator: "wave", RecipientName: "Drissa Konaté", RecipientPhone: "+2250123987654"},
+	}
+	kinds := []string{"Invoice", "Refund order", "Supplier order"}
+	amounts := []int64{150000, 42000, 9000, 60000, 25000, 480000, 12000}
+	rejections := []string{"Duplicate of an earlier payout", "Wrong amount", "Recipient not recognised"}
+
+	// The history, oldest first so ids grow with time: PO-1001 to PO-2000.
+	// All by the maker: with one approver, a payout she created herself
+	// could never have been decided.
+	const history = 1000
+	for i := range history {
+		age := history - i // counted from the hand-written payouts below
+		in := recipients[i%len(recipients)]
+		in.Amount = amounts[i%len(amounts)] + 1000*int64(i*29%53)
+		in.Reference = fmt.Sprintf("%s %04d", kinds[i%len(kinds)], 1000+i)
+
+		status, reason := payoutApproved, ""
+		switch {
+		case age < 32 && age%8 == 3:
+			// A few still wait, further down than the first page shows:
+			// the reason the list can be filtered by status.
+			status = payoutPending
+		case i%11 == 5:
+			status, reason = payoutRejected, rejections[i%len(rejections)]
+		}
+		add(in, maker, status, reason, now.Add(-time.Duration(age)*14*time.Hour))
+	}
+
+	// The newest four, PO-2001 to PO-2004, written by hand: the tests name them.
 	for i, p := range []struct {
 		in     createPayoutRequest
 		by     *User
@@ -210,13 +277,8 @@ func seed(now time.Time) *store {
 		{createPayoutRequest{Amount: 9000, Operator: "wave", RecipientName: "Yao Kouassi", RecipientPhone: "+2250709080706", Reference: "Driver bonus"}, approver, payoutPending, ""},
 		{createPayoutRequest{Amount: 60000, Operator: "moov_money", RecipientName: "Aminata Bamba", RecipientPhone: "+2250102030405", Reference: "Supplier, October"}, maker, payoutPending, ""},
 	} {
-		created := now.Add(-time.Duration(4-i) * 3 * time.Hour)
-		payout := s.newPayout(p.in, p.by, created)
-		if p.status != payoutPending {
-			payout.decide(p.status, p.reason, approver, created.Add(40*time.Minute))
-		}
-		s.payouts = append([]*Payout{payout}, s.payouts...)
+		add(p.in, p.by, p.status, p.reason, now.Add(-time.Duration(4-i)*3*time.Hour))
 	}
 
-	return s
+	slices.Reverse(s.payouts) // newest first
 }

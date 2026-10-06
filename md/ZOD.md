@@ -206,7 +206,7 @@ Estas regras são só para dar resposta rápida. O Go confere tudo de novo.
 
 Em [transactions/schemas.ts](../src/features/transactions/schemas.ts), `TransactionFiltersSchema` usa `.optional().catch(undefined)`: `?status=banana` é descartado, e a página abre sem filtro.
 
-Em [lib/sort.ts](../src/lib/sort.ts), `sortSchema` lê a ordenação como um texto só: `amount` é crescente, `-amount` é decrescente. Uma coluna que a lista não sabe ordenar é descartada.
+Em [lib/sort.ts](../src/lib/sort.ts), `sortSchema` lê a ordenação como um texto só: `amount` é crescente, `-amount` é decrescente, e a vírgula combina colunas (`-amount,created_at`). Uma coluna que a lista não sabe ordenar, ou repetida, é descartada; as outras ficam.
 
 ### 4.8 O armazenamento e o estado do router
 

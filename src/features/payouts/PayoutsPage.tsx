@@ -1,6 +1,6 @@
 import { Alert, Button } from "@heroui/react";
 import { buttonVariants } from "@heroui/styles";
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
 import { z } from "zod";
@@ -9,22 +9,30 @@ import { EmptyMessage } from "@/components/EmptyMessage";
 import { ErrorState } from "@/components/ErrorState";
 import { Money } from "@/components/Money";
 import { PageHeader } from "@/components/PageHeader";
+import { SelectField } from "@/components/SelectField";
 import { StatusChip } from "@/components/StatusChip";
 import { Can } from "@/features/auth/guards";
 import { useCan, useSession } from "@/features/auth/session";
 import { formatPhone } from "@/lib/format";
 import { OPERATOR_LABEL } from "@/lib/operators";
-import { sortRows, sortSchema, toSortParam, type Sort } from "@/lib/sort";
+import { toSortParam } from "@/lib/sort";
 import { payoutQueries } from "./api";
 import { DecisionDialog } from "./DecisionDialog";
-import { PAYOUT_STATUS, type Payout } from "./schemas";
+import {
+  DEFAULT_PAYOUT_SORT,
+  PAYOUT_STATUS,
+  PAYOUT_STATUS_OPTIONS,
+  PayoutFiltersSchema,
+  PayoutSortSchema,
+  type Payout,
+  type PayoutFilters,
+} from "./schemas";
 
 const columns: Column<Payout>[] = [
   { key: "id", header: "Payout", sortable: true },
   {
     key: "recipient_name",
     header: "Recipient",
-    sortable: true,
     render: (payout) => (
       <div className="flex flex-col">
         <span>{payout.recipient_name}</span>
@@ -35,7 +43,7 @@ const columns: Column<Payout>[] = [
       </div>
     ),
   },
-  { key: "reference", header: "Reference", sortable: true },
+  { key: "reference", header: "Reference" },
   {
     key: "amount",
     header: "Amount",
@@ -48,13 +56,11 @@ const columns: Column<Payout>[] = [
   {
     key: "created_by",
     header: "Created by",
-    sortable: true,
     render: (payout) => payout.created_by.name,
   },
   {
     key: "status",
     header: "Status",
-    sortable: true,
     render: (payout) => (
       <div className="flex flex-col items-start gap-1">
         <StatusChip {...PAYOUT_STATUS[payout.status]} />
@@ -70,34 +76,6 @@ const columns: Column<Payout>[] = [
   },
 ];
 
-// The whole list arrives in one response, so the browser can sort it. What
-// each column is ordered by is what its cell shows, not always the raw field:
-// a status sorts by its label, not by its code.
-const SortSchema = sortSchema([
-  "id",
-  "recipient_name",
-  "reference",
-  "amount",
-  "created_by",
-  "status",
-]);
-type PayoutSort = NonNullable<z.infer<typeof SortSchema>>;
-
-const SORT_VALUE: Record<
-  PayoutSort["column"],
-  (payout: Payout) => string | number
-> = {
-  id: (payout) => payout.id,
-  recipient_name: (payout) => payout.recipient_name,
-  reference: (payout) => payout.reference,
-  amount: (payout) => payout.amount,
-  created_by: (payout) => payout.created_by.name,
-  status: (payout) => PAYOUT_STATUS[payout.status].label,
-};
-
-/** Ids count up, so this is newest first: the order the server sends. */
-const DEFAULT_SORT: PayoutSort = { column: "id", direction: "descending" };
-
 type PendingDecision = { payout: Payout; decision: "approve" | "reject" };
 
 // Set by the wizard after it creates a payout. Router state is `any`: parse it.
@@ -108,8 +86,14 @@ export function PayoutsPage() {
   const can = useCan();
   const location = useLocation();
   const navigate = useNavigate();
+  // The filter and the sort live in the URL, like those of the transactions list.
   const [searchParams, setSearchParams] = useSearchParams();
-  const query = useQuery(payoutQueries.list());
+  const params = Object.fromEntries(searchParams);
+  const filters = PayoutFiltersSchema.parse(params);
+  const sort = PayoutSortSchema.parse(params.sort) ?? DEFAULT_PAYOUT_SORT;
+
+  const query = useInfiniteQuery(payoutQueries.list(filters, sort));
+  const rows = query.data?.pages.flatMap((page) => page.items) ?? [];
   const [pending, setPending] = useState<PendingDecision | null>(null);
 
   // The "sent for approval" notice is for this visit of the page. It is read
@@ -127,18 +111,10 @@ export function PayoutsPage() {
     }
   }, [location, navigate]);
 
-  // The sort lives in the URL, like the filters of the transactions list.
-  const sort =
-    SortSchema.parse(searchParams.get("sort") ?? undefined) ?? DEFAULT_SORT;
-  const rows = sortRows(
-    query.data ?? [],
-    sort.direction,
-    SORT_VALUE[sort.column],
-  );
-
-  function setSort(next: Sort) {
+  function setParam(name: keyof PayoutFilters | "sort", value: string | null) {
     setSearchParams((params) => {
-      params.set("sort", toSortParam(next));
+      if (value) params.set(name, value);
+      else params.delete(name);
       return params;
     });
   }
@@ -165,11 +141,24 @@ export function PayoutsPage() {
         </Alert>
       )}
 
+      {/* With pages, a payout that waits can sit far below the first one.
+          This filter is how an approver sees every one of them. */}
+      <SelectField
+        className="w-52"
+        label="Status"
+        emptyLabel="All statuses"
+        options={PAYOUT_STATUS_OPTIONS}
+        value={filters.status ?? null}
+        onChange={(status) => setParam("status", status)}
+      />
+
       {query.isError && (
         <ErrorState
           title="Could not load payouts"
           error={query.error}
-          onRetry={() => query.refetch()}
+          onRetry={() =>
+            query.isFetchNextPageError ? query.fetchNextPage() : query.refetch()
+          }
         />
       )}
 
@@ -179,13 +168,43 @@ export function PayoutsPage() {
           columns={columns}
           rows={rows}
           sort={sort}
-          onSortChange={setSort}
+          onSortChange={(next) => setParam("sort", toSortParam(next))}
           isLoading={query.isPending}
+          isStale={query.isPlaceholderData}
           empty={
-            <EmptyMessage
-              title="No payouts yet"
-              description="Create one and it will wait here for approval."
-            />
+            filters.status ? (
+              <EmptyMessage title="No payouts with this status">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onPress={() => setParam("status", null)}
+                >
+                  Clear filter
+                </Button>
+              </EmptyMessage>
+            ) : (
+              <EmptyMessage
+                title="No payouts yet"
+                description="Create one and it will wait here for approval."
+              />
+            )
+          }
+          footer={
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-sm text-muted">
+                Showing {rows.length} payouts
+              </span>
+              {query.hasNextPage && (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  isPending={query.isFetchingNextPage}
+                  onPress={() => query.fetchNextPage()}
+                >
+                  Load more
+                </Button>
+              )}
+            </div>
           }
           // Never allowed to approve: no column at all (hidden, not disabled).
           actions={

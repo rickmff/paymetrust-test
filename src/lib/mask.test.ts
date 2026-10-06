@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { phoneMask } from "@/lib/phone";
-import { applyMask } from "./mask";
+import { applyMask } from "../lib/mask";
 
 // What a mask gets wrong is the caret. Each case is the input right after an
 // edit, as the browser left it, with "|" for the caret.

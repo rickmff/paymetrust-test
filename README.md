@@ -29,11 +29,11 @@ the login page has a button for each; the production build leaves them out.
 | `maker@demo.test`    | also create payouts                              |
 | `approver@demo.test` | also approve or reject payouts created by others |
 
-To watch a pending payment update live, open `/transactions/PAY-1035` and play
+To watch a pending payment update live, open `/transactions/PAY-50999` and play
 the operator's confirmation:
 
 ```bash
-curl -X POST http://127.0.0.1:8080/api/test/transactions/PAY-1035/settle \
+curl -X POST http://127.0.0.1:8080/api/test/transactions/PAY-50999/settle \
   -H 'Content-Type: application/json' -d '{"status":"success"}'
 ```
 
@@ -69,7 +69,7 @@ src/
     auth/            session, permissions, route guards, login
     dashboard/       key figures
     transactions/    table with URL filters and sort, cursor pagination, detail with polling
-    payouts/         list with approval flow, multi-step "new payout" form
+    payouts/         paged list with status filter and approval flow, multi-step "new payout" form
   test/              MSW server, fixtures, render helper
 e2e/                 Playwright: auth setup, fixtures, page object, specs
 visual-tests/        Playwright against Storybook: screenshots, browser behaviour
@@ -92,7 +92,9 @@ visual-tests/        Playwright against Storybook: screenshots, browser behaviou
   stands for one payout: when the draft changes it gets a new one, and the API
   refuses a key that comes back with a different body.
 - **Filters and sort live in the URL; pagination uses the server's cursor.**
-  A paged list is sorted by the server, which alone has every row.
+  A paged list is sorted by the server, which alone has every row. The API
+  starts with 50 000 transactions and 1 004 payouts, so neither list could
+  arrive in one response.
 - **Each page is its own download.** Pages are `lazy` routes; the shell and the
   guards come first, and a page's code is fetched when its route is visited.
 - **A navigation behaves like a page load.** Each page sets the tab's title,

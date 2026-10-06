@@ -1,49 +1,43 @@
 import {
+  infiniteQueryOptions,
+  keepPreviousData,
   queryOptions,
   useMutation,
   useQueryClient,
   type QueryClient,
 } from "@tanstack/react-query";
-import type { z } from "zod";
 import { summaryQuery } from "@/features/dashboard/api";
 import { api, pageOf } from "@/lib/api";
 import type { Currency, MinorUnits } from "@/lib/money";
+import { toSortParam } from "@/lib/sort";
 import {
   PayoutSchema,
   QuoteSchema,
-  type Payout,
+  type PayoutFilters,
   type PayoutFormValues,
+  type PayoutSort,
 } from "./schemas";
 
 const PayoutPageSchema = pageOf(PayoutSchema);
-type PayoutPage = z.infer<typeof PayoutPageSchema>;
 
 export const payoutQueries = {
   all: ["payouts"] as const,
 
-  list: () =>
-    queryOptions({
-      queryKey: ["payouts", "list"] as const,
-      // Every payout, not one page of them. The page sorts in the browser,
-      // and an approver must never miss a payout because it sat on a second
-      // page. Today the API answers with all of them at once; if it starts to
-      // page, this follows the cursor to the end.
-      queryFn: async ({ signal }) => {
-        const payouts: Payout[] = [];
-        let cursor: string | null = null;
-        do {
-          // Annotated: the cursor comes from the page and the page from the
-          // cursor, and TypeScript won't infer a type that depends on itself.
-          const page: PayoutPage = await api("/payouts", {
-            schema: PayoutPageSchema,
-            query: { cursor },
-            signal,
-          });
-          payouts.push(...page.items);
-          cursor = page.next_cursor;
-        } while (cursor !== null);
-        return payouts;
-      },
+  // Pages with the server's cursor, like the transactions list: there are
+  // too many payouts to ask for all of them. What an approver must not miss
+  // is found with the status filter, not by scrolling to the end.
+  list: (filters: PayoutFilters, sort: PayoutSort) =>
+    infiniteQueryOptions({
+      queryKey: ["payouts", "list", filters, sort] as const,
+      queryFn: ({ pageParam, signal }) =>
+        api("/payouts", {
+          schema: PayoutPageSchema,
+          query: { ...filters, sort: toSortParam(sort), cursor: pageParam },
+          signal,
+        }),
+      initialPageParam: null as string | null,
+      getNextPageParam: (lastPage) => lastPage.next_cursor,
+      placeholderData: keepPreviousData,
     }),
 
   /** The fee is a business rule, so the server computes it. The UI only shows it. */

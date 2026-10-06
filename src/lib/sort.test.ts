@@ -1,16 +1,26 @@
 import { expect, test } from "vitest";
-import { sortRows, sortSchema, toSortParam } from "./sort";
+import { nextSort, sortSchema, toSortParam, type Sort } from "./sort";
 
 const SortSchema = sortSchema(["created_at", "amount"]);
 
-test("reads a sort from its URL form, and writes the same form back", () => {
-  const ascending = { column: "amount", direction: "ascending" } as const;
-  const descending = { column: "amount", direction: "descending" } as const;
+const ascending = { column: "amount", direction: "ascending" } as const;
+const descending = { column: "amount", direction: "descending" } as const;
+const newestFirst = { column: "created_at", direction: "descending" } as const;
+const oldestFirst = { column: "created_at", direction: "ascending" } as const;
 
-  expect(SortSchema.parse("amount")).toEqual(ascending);
-  expect(SortSchema.parse("-amount")).toEqual(descending);
-  expect(toSortParam(ascending)).toBe("amount");
-  expect(toSortParam(descending)).toBe("-amount");
+test("reads a sort from its URL form, and writes the same form back", () => {
+  expect(SortSchema.parse("amount")).toEqual([ascending]);
+  expect(SortSchema.parse("-amount")).toEqual([descending]);
+  expect(toSortParam([ascending])).toBe("amount");
+  expect(toSortParam([descending])).toBe("-amount");
+});
+
+test("reads a combined sort in the order it was written", () => {
+  expect(SortSchema.parse("-amount,created_at")).toEqual([
+    descending,
+    oldestFirst,
+  ]);
+  expect(toSortParam([descending, oldestFirst])).toBe("-amount,created_at");
 });
 
 test("drops a sort the list can't do instead of failing the whole page", () => {
@@ -19,42 +29,41 @@ test("drops a sort the list can't do instead of failing the whole page", () => {
   }
 });
 
-test("sorts numbers by value, in either direction", () => {
-  const rows = [{ amount: 9000 }, { amount: 150000 }, { amount: 42000 }];
-  const amount = (row: { amount: number }) => row.amount;
-
-  expect(sortRows(rows, "ascending", amount).map(amount)).toEqual([
-    9000, 42000, 150000,
+test("keeps the terms it can read when another one is wrong or repeated", () => {
+  expect(SortSchema.parse("status,-amount")).toEqual([descending]);
+  expect(SortSchema.parse("amount,,-created_at")).toEqual([
+    ascending,
+    newestFirst,
   ]);
-  expect(sortRows(rows, "descending", amount).map(amount)).toEqual([
-    150000, 42000, 9000,
-  ]);
+  // The first mention of a column wins: one column can't go both ways.
+  expect(SortSchema.parse("amount,-amount")).toEqual([ascending]);
 });
 
-test("sorts text the way a person reads it: digits as numbers, accents ignored", () => {
-  const text = (value: string) => value;
+test("picking a column alone sorts by it, and again turns it around", () => {
+  const alone = (sort: Sort, column: string) => nextSort(sort, column, false);
 
-  // As plain strings, "PO-1000" would come before "PO-999".
-  expect(sortRows(["PO-1000", "PO-999"], "ascending", text)).toEqual([
-    "PO-999",
-    "PO-1000",
-  ]);
-  expect(sortRows(["Yao", "Koné", "aminata"], "ascending", text)).toEqual([
-    "aminata",
-    "Koné",
-    "Yao",
-  ]);
+  expect(alone([newestFirst], "amount")).toEqual([ascending]);
+  expect(alone([ascending], "amount")).toEqual([descending]);
+  expect(alone([descending], "amount")).toEqual([ascending]);
+  // The other terms of a combined sort go.
+  expect(alone([ascending, newestFirst], "amount")).toEqual([descending]);
 });
 
-test("leaves the list it was given alone, and keeps ties in their order", () => {
-  const rows = [
-    { id: "b", amount: 500 },
-    { id: "a", amount: 500 },
-    { id: "c", amount: 100 },
-  ];
+test("combining a column adds it, turns it around, then takes it out", () => {
+  const combine = (sort: Sort, column: string) => nextSort(sort, column, true);
 
-  const sorted = sortRows(rows, "descending", (row) => row.amount);
-
-  expect(sorted.map((row) => row.id)).toEqual(["b", "a", "c"]);
-  expect(rows.map((row) => row.id)).toEqual(["b", "a", "c"]);
+  expect(combine([descending], "created_at")).toEqual([
+    descending,
+    oldestFirst,
+  ]);
+  // It keeps its place: the order of the terms is the order they were added.
+  expect(combine([oldestFirst, descending], "created_at")).toEqual([
+    newestFirst,
+    descending,
+  ]);
+  expect(combine([newestFirst, descending], "created_at")).toEqual([
+    descending,
+  ]);
+  // Nothing left: the list goes back to its default order.
+  expect(combine([descending], "amount")).toEqual([]);
 });

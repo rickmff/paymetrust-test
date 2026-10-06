@@ -1,7 +1,12 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { expect, test } from "vitest";
-import { approvedPayout, ownPayout, pendingPayout } from "@/test/fixtures";
+import {
+  approvedPayout,
+  ownPayout,
+  payouts,
+  pendingPayout,
+} from "@/test/fixtures";
 import { renderApp } from "@/test/render";
 import { problem, server } from "@/test/server";
 
@@ -174,7 +179,21 @@ test("when someone else decided first, shows the conflict and refreshes the list
   expect(await within(row).findByText("Approved")).toBeVisible();
 });
 
-test("shows every payout even when the API sends them in pages", async () => {
+// The list: pages, sort and filter all happen on the server.
+
+/** Collects the query string of every list request the page makes. */
+function recordListRequests() {
+  const queries: URLSearchParams[] = [];
+  server.use(
+    http.get("/api/payouts", ({ request }) => {
+      queries.push(new URL(request.url).searchParams);
+      return HttpResponse.json({ items: payouts, next_cursor: null });
+    }),
+  );
+  return queries;
+}
+
+test("loads the next page of payouts with the cursor the server gave", async () => {
   const cursors: (string | null)[] = [];
   server.use(
     http.get("/api/payouts", ({ request }) => {
@@ -187,60 +206,129 @@ test("shows every payout even when the API sends them in pages", async () => {
       );
     }),
   );
-  renderApp("/payouts");
+  const { user } = renderApp("/payouts");
+  await screen.findByRole("row", { name: /PO-2004/ });
+  // Only what was asked for: the second page is not fetched ahead of time.
+  expect(screen.getByText("Showing 1 payouts")).toBeVisible();
+  expect(cursors).toEqual([null]);
 
-  // A payout waiting for approval on page 2 is still on screen.
+  await user.click(screen.getByRole("button", { name: "Load more" }));
+
   expect(await screen.findByRole("row", { name: /PO-2003/ })).toBeVisible();
   expect(screen.getByRole("row", { name: /PO-2004/ })).toBeVisible();
   expect(cursors).toEqual([null, "after-2004"]);
+  // The last page has no cursor, so there is nothing more to load.
+  expect(
+    screen.queryByRole("button", { name: "Load more" }),
+  ).not.toBeInTheDocument();
 });
 
-// Sorting: the whole list is in the browser, so no request is needed.
-
-test("sorts the list in the browser, and keeps the choice in the URL", async () => {
-  let requests = 0;
-  server.use(
-    http.get("/api/payouts", () => {
-      requests += 1;
-      return HttpResponse.json({
-        items: [pendingPayout, ownPayout],
-        next_cursor: null,
-      });
-    }),
-  );
+test("sorts on the server: the choice goes to the URL and to the API", async () => {
+  const queries = recordListRequests();
   const { user, router } = renderApp("/payouts");
   await screen.findByRole("row", { name: /PO-2004/ });
-  const ids = () =>
-    screen.getAllByRole("rowheader").map((cell) => cell.textContent);
   const header = (name: string) => screen.getByRole("columnheader", { name });
 
-  // Newest first, the order the server sends.
-  expect(ids()).toEqual(["PO-2004", "PO-2003"]);
+  // Newest first until the user asks for something else.
+  expect(queries[0]?.get("sort")).toBe("-id");
   expect(header("Payout")).toHaveAttribute("aria-sort", "descending");
 
   await user.click(header("Amount"));
 
-  // 9 000 before 60 000.
-  await waitFor(() => expect(ids()).toEqual(["PO-2003", "PO-2004"]));
-  expect(header("Amount")).toHaveAttribute("aria-sort", "ascending");
+  await waitFor(() => expect(queries.at(-1)?.get("sort")).toBe("amount"));
   expect(router.state.location.search).toBe("?sort=amount");
+  expect(header("Amount")).toHaveAttribute("aria-sort", "ascending");
 
   await user.click(header("Amount"));
 
-  await waitFor(() => expect(ids()).toEqual(["PO-2004", "PO-2003"]));
+  await waitFor(() => expect(queries.at(-1)?.get("sort")).toBe("-amount"));
   expect(router.state.location.search).toBe("?sort=-amount");
-  expect(requests).toBe(1);
 });
 
-test("sorts a column by what it shows, not by the raw field", async () => {
-  // `created_by` is an object; the cell shows its name. Awa before Kofi.
+test("with Shift, a second column joins the sort as the tie-break", async () => {
+  const queries = recordListRequests();
+  const { user, router } = renderApp("/payouts?sort=amount");
+  await screen.findByRole("row", { name: /PO-2004/ });
+  const header = (name: RegExp) => screen.getByRole("columnheader", { name });
+
+  await user.keyboard("{Shift>}");
+  await user.click(header(/Payout/));
+
+  await waitFor(() => expect(queries.at(-1)?.get("sort")).toBe("amount,id"));
+  expect(router.state.location.search).toBe("?sort=amount%2Cid");
+  // One header carries `aria-sort`; the number and the words tell the rest.
+  expect(header(/Amount/)).toHaveAttribute("aria-sort", "ascending");
+  expect(header(/Amount/)).toHaveTextContent("Amount1");
+  expect(header(/Payout/)).toHaveAttribute("aria-sort", "none");
+  expect(header(/Payout/)).toHaveAccessibleName("Payout, sort 2, ascending");
+
+  // Again turns it around in its place, and a third time takes it out.
+  await user.click(header(/Payout/));
+  await waitFor(() => expect(queries.at(-1)?.get("sort")).toBe("amount,-id"));
+
+  // No request to wait for this time: this sort is the one the page opened
+  // with, and its rows are still in the cache.
+  await user.click(header(/Payout/));
+  expect(router.state.location.search).toBe("?sort=amount");
+  expect(header(/Payout/)).toHaveAccessibleName("Payout");
+});
+
+test("without Shift, a click sorts by that column alone", async () => {
+  const queries = recordListRequests();
+  const { user, router } = renderApp("/payouts?sort=amount,-id");
+  await screen.findByRole("row", { name: /PO-2004/ });
+  expect(queries[0]?.get("sort")).toBe("amount,-id");
+
+  await user.click(screen.getByRole("columnheader", { name: /Amount/ }));
+
+  // The tie-break goes, and the column turns around as it always did.
+  await waitFor(() => expect(queries.at(-1)?.get("sort")).toBe("-amount"));
+  expect(router.state.location.search).toBe("?sort=-amount");
+});
+
+test("ignores a sort the server can't do", async () => {
+  // With pages, only the server can sort, and it offers two columns.
+  const queries = recordListRequests();
   renderApp("/payouts?sort=created_by");
 
   await screen.findByRole("row", { name: /PO-2004/ });
 
+  expect(queries[0]?.get("sort")).toBe("-id");
   expect(
-    screen.getAllByRole("rowheader").map((cell) => cell.textContent),
-  ).toEqual(["PO-2003", "PO-2004"]);
+    screen.getByRole("columnheader", { name: "Created by" }),
+  ).not.toHaveAttribute("aria-sort");
+});
+
+test("filters by status, so a payout that waits is never pages away", async () => {
+  const queries = recordListRequests();
+  const { user, router } = renderApp("/payouts");
+  await screen.findByRole("row", { name: /PO-2004/ });
+  expect(queries[0]?.has("status")).toBe(false);
+
+  await user.click(screen.getByRole("button", { name: /status/i }));
+  await user.click(screen.getByRole("option", { name: "Pending approval" }));
+
+  await screen.findByRole("button", { name: /pending approval.*status/i });
+  expect(router.state.location.search).toBe("?status=pending_approval");
+  expect(queries.at(-1)?.get("status")).toBe("pending_approval");
+});
+
+test("when no payout has the chosen status, offers to clear the filter", async () => {
+  server.use(
+    http.get("/api/payouts", ({ request }) =>
+      HttpResponse.json({
+        items: new URL(request.url).searchParams.has("status") ? [] : payouts,
+        next_cursor: null,
+      }),
+    ),
+  );
+  const { user, router } = renderApp("/payouts?status=rejected&sort=-amount");
+
+  await user.click(await screen.findByRole("button", { name: "Clear filter" }));
+
+  expect(await screen.findByRole("row", { name: /PO-2004/ })).toBeVisible();
+  // The sort stays: it is not what hid the rows.
+  expect(router.state.location.search).toBe("?sort=-amount");
 });
 
 test("when the API answers 403, says so instead of breaking", async () => {

@@ -34,7 +34,8 @@ export function DashboardPage() {
 
       <section
         aria-label="Key figures"
-        className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4"
+        // Four across only when a total in the billions still fits its card.
+        className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4"
       >
         <Stat label="Collected, net of fees">
           {summary && (
@@ -50,7 +51,11 @@ export function DashboardPage() {
         <Can permission="payout:read">
           <Stat label="Payouts awaiting approval">
             {summary && (
-              <Link href="/payouts">{summary.payouts_pending_approval}</Link>
+              // The list comes in pages: without the filter, the link would
+              // show the newest payouts, not the ones this number counts.
+              <Link href="/payouts?status=pending_approval">
+                {summary.payouts_pending_approval}
+              </Link>
             )}
           </Stat>
         </Can>

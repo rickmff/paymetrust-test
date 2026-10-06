@@ -245,7 +245,7 @@ Cada regra é escrita uma vez, na rota-pai, e todas as páginas debaixo dela a r
 ### 4.6 A URL como estado
 
 - **Os filtros e a ordenação da lista de transações** são lidos com `useSearchParams` e validados com o Zod. Mudar um filtro muda a URL, e a tela reage à URL ([TransactionsPage.tsx](../src/features/transactions/TransactionsPage.tsx)).
-- **A ordenação da lista de payouts** também fica na URL ([PayoutsPage.tsx](../src/features/payouts/PayoutsPage.tsx)).
+- **A ordenação e o filtro de status da lista de payouts** também ficam na URL ([PayoutsPage.tsx](../src/features/payouts/PayoutsPage.tsx)).
 - **O id do detalhe** vem de `useParams`. Pode faltar, por isso tem um valor por omissão ([TransactionDetailPage.tsx](../src/features/transactions/TransactionDetailPage.tsx)).
 - **A etapa atual do formulário** é o próprio endereço.
 

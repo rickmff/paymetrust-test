@@ -250,7 +250,7 @@ Partial<Payout>; // { id?: string; name?: string; amount?: number }
 Omit<Payout, "id">; // { name: string; amount: number }
 ```
 
-**No app:** [wizard.ts](src/features/payouts/new/wizard.ts#L68) (`Partial`) · [payouts/api.ts](src/features/payouts/api.ts#L49) (`Omit`) · [operators.ts](src/lib/operators.ts#L13-L18) (`Record`)
+**No app:** [wizard.ts](src/features/payouts/new/wizard.ts#L68) (`Partial`) · [payouts/api.ts](src/features/payouts/api.ts#L67) (`Omit`) · [operators.ts](src/lib/operators.ts#L13-L18) (`Record`)
 
 </details>
 
@@ -522,7 +522,7 @@ type Status = keyof typeof LABELS; // "pending" | "success"
 
 Existem dois `typeof`. O que distingue texto de número roda com o app. O que tira o tipo de um valor só existe nos tipos.
 
-**No app:** [DataTable.tsx](src/components/DataTable.tsx#L6) · [payouts/api.ts](src/features/payouts/api.ts#L47-L54)
+**No app:** [DataTable.tsx](src/components/DataTable.tsx#L6) · [payouts/api.ts](src/features/payouts/api.ts#L65-L72)
 
 </details>
 

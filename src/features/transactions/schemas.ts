@@ -75,7 +75,6 @@ export type TransactionSort = NonNullable<
 >;
 
 /** Newest first: what the list shows when the URL asks for nothing else. */
-export const DEFAULT_TRANSACTION_SORT: TransactionSort = {
-  column: "created_at",
-  direction: "descending",
-};
+export const DEFAULT_TRANSACTION_SORT: TransactionSort = [
+  { column: "created_at", direction: "descending" },
+];

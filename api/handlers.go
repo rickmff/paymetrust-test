@@ -120,37 +120,174 @@ func (a *app) summary(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ---- transactions ----------------------------------------------------------
+// ---- lists -----------------------------------------------------------------
 
-// What ?sort= accepts: a field name, with "-" in front for descending. Each
-// field is the value rows are ordered by; the id breaks ties, so the order is
-// total and a page never starts in the middle of equal values.
-var transactionSorts = map[string]func(*Transaction) int64{
-	"created_at": func(t *Transaction) int64 { return t.CreatedAt.UnixNano() },
-	"amount":     func(t *Transaction) int64 { return t.Amount },
+// listing is how one list can be ordered. ?sort= takes field names separated
+// by commas, each with "-" in front for descending: "-amount,created_at" is
+// the biggest first and, among equal amounts, the oldest first. Each field is
+// the value rows are ordered by. Every list can also be sorted by "id".
+type listing[T any] struct {
+	id          func(T) string
+	sorts       map[string]func(T) int64
+	defaultSort string
 }
 
-const defaultTransactionSort = "-created_at" // newest first
+// ordering is a ?sort= that was read: the fields rows are compared by, first
+// to last, and then the id. No two rows share an id, so the order is total
+// and a page never starts in the middle of equal values.
+type ordering[T any] struct {
+	fields       []orderField[T]
+	idDescending bool
+}
 
-// The cursor is the sort key of the last row the client saw: (value, id), and
-// the sort it belongs to. Unlike an offset, it stays correct while new
-// transactions keep arriving.
-func encodeCursor(sort string, value int64, id string) string {
-	return base64.RawURLEncoding.EncodeToString(fmt.Appendf(nil, "%s|%d|%s", sort, value, id))
+type orderField[T any] struct {
+	value      func(T) int64
+	descending bool
+}
+
+func (l listing[T]) ordering(sort string) (o ordering[T], ok bool) {
+	seen := map[string]bool{}
+	for _, part := range strings.Split(sort, ",") {
+		name, descending := strings.CutPrefix(part, "-")
+		value, known := l.sorts[name]
+		if seen[name] || !known && name != "id" {
+			return o, false
+		}
+		seen[name] = true
+		if seen["id"] && name != "id" {
+			continue // after the id nothing ties, so this field can't change the order
+		}
+		// Unless the id is named, it goes the same way as the last field.
+		o.idDescending = descending
+		if known {
+			o.fields = append(o.fields, orderField[T]{value, descending})
+		}
+	}
+	return o, true
+}
+
+// turn reverses a comparison for a descending order.
+func turn(c int, descending bool) int {
+	if descending {
+		return -c
+	}
+	return c
+}
+
+// The cursor is the sort key of the last row the client saw: its value for
+// each field of the sort, then its id, and the sort it belongs to. Unlike an
+// offset, it stays correct while new rows keep arriving.
+func encodeCursor(sort string, values []int64, id string) string {
+	texts := make([]string, len(values))
+	for i, value := range values {
+		texts[i] = strconv.FormatInt(value, 10)
+	}
+	return base64.RawURLEncoding.EncodeToString([]byte(sort + "|" + strings.Join(texts, ",") + "|" + id))
 }
 
 // A cursor made for another sort is not valid: it points into a different order.
-func decodeCursor(cursor, sort string) (value int64, id string, ok bool) {
+func decodeCursor(cursor, sort string, fields int) (values []int64, id string, ok bool) {
 	raw, err := base64.RawURLEncoding.DecodeString(cursor)
 	if err != nil {
-		return 0, "", false
+		return nil, "", false
 	}
 	parts := strings.SplitN(string(raw), "|", 3)
 	if len(parts) != 3 || parts[0] != sort {
-		return 0, "", false
+		return nil, "", false
 	}
-	value, err = strconv.ParseInt(parts[1], 10, 64)
-	return value, parts[2], err == nil
+	if parts[1] != "" { // a sort by id alone has no values
+		for _, text := range strings.Split(parts[1], ",") {
+			value, err := strconv.ParseInt(text, 10, 64)
+			if err != nil {
+				return nil, "", false
+			}
+			values = append(values, value)
+		}
+	}
+	return values, parts[2], len(values) == fields
+}
+
+// An id is a prefix and a counter, so the longer one is the newer one. As
+// plain strings, "PAY-10000" would come before "PAY-9999".
+func compareIDs(a, b string) int {
+	return cmp.Or(cmp.Compare(len(a), len(b)), cmp.Compare(a, b))
+}
+
+// writePage answers a list request with one page of rows. The handler has
+// already filtered them; ?sort=, ?cursor= and ?limit= are read here, the same
+// way for every list.
+func writePage[T any](w http.ResponseWriter, r *http.Request, list listing[T], rows []T) {
+	q := r.URL.Query()
+
+	limit := 10
+	if raw := q.Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 50 {
+			writeProblem(w, http.StatusBadRequest, "invalid_limit", "limit must be between 1 and 50.")
+			return
+		}
+		limit = n
+	}
+
+	sort := cmp.Or(q.Get("sort"), list.defaultSort)
+	order, ok := list.ordering(sort)
+	if !ok {
+		writeProblem(w, http.StatusBadRequest, "invalid_sort", "Unknown sort.")
+		return
+	}
+
+	cursor := q.Get("cursor")
+	afterValues, afterID, ok := decodeCursor(cursor, sort, len(order.fields))
+	if cursor != "" && !ok {
+		writeProblem(w, http.StatusBadRequest, "invalid_cursor", "The cursor is not valid.")
+		return
+	}
+
+	// A database would do this with ORDER BY and an index. Here: skip, sort, cut.
+	if cursor != "" {
+		rows = slices.DeleteFunc(rows, func(row T) bool {
+			// At or before the cursor: the client already has it.
+			for i, field := range order.fields {
+				if c := cmp.Compare(field.value(row), afterValues[i]); c != 0 {
+					return turn(c, field.descending) < 0
+				}
+			}
+			return turn(compareIDs(list.id(row), afterID), order.idDescending) <= 0
+		})
+	}
+	// Field by field, then by id: each next one only decides between rows the
+	// ones before it left equal.
+	slices.SortFunc(rows, func(x, y T) int {
+		for _, field := range order.fields {
+			if c := cmp.Compare(field.value(x), field.value(y)); c != 0 {
+				return turn(c, field.descending)
+			}
+		}
+		return turn(compareIDs(list.id(x), list.id(y)), order.idDescending)
+	})
+
+	result := page[T]{Items: rows}
+	if len(rows) > limit { // one more row exists, so there is a next page
+		last := rows[limit-1]
+		values := make([]int64, len(order.fields))
+		for i, field := range order.fields {
+			values[i] = field.value(last)
+		}
+		next := encodeCursor(sort, values, list.id(last))
+		result.Items, result.NextCursor = rows[:limit], &next
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// ---- transactions ----------------------------------------------------------
+
+var transactionList = listing[*Transaction]{
+	id: func(t *Transaction) string { return t.ID },
+	sorts: map[string]func(*Transaction) int64{
+		"created_at": func(t *Transaction) int64 { return t.CreatedAt.UnixNano() },
+		"amount":     func(t *Transaction) int64 { return t.Amount },
+	},
+	defaultSort: "-created_at", // newest first
 }
 
 func (a *app) listTransactions(w http.ResponseWriter, r *http.Request) {
@@ -165,65 +302,17 @@ func (a *app) listTransactions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limit := 10
-	if raw := q.Get("limit"); raw != "" {
-		n, err := strconv.Atoi(raw)
-		if err != nil || n < 1 || n > 50 {
-			writeProblem(w, http.StatusBadRequest, "invalid_limit", "limit must be between 1 and 50.")
-			return
-		}
-		limit = n
-	}
-
-	sort := cmp.Or(q.Get("sort"), defaultTransactionSort)
-	field, descending := strings.CutPrefix(sort, "-")
-	sortValue, known := transactionSorts[field]
-	if !known {
-		writeProblem(w, http.StatusBadRequest, "invalid_sort", "Unknown sort.")
-		return
-	}
-	// Where one row stands against another in the requested order: by value,
-	// then by id, the whole comparison turned around when descending.
-	order := func(aValue int64, aID string, bValue int64, bID string) int {
-		c := cmp.Or(cmp.Compare(aValue, bValue), cmp.Compare(aID, bID))
-		if descending {
-			return -c
-		}
-		return c
-	}
-
-	cursor := q.Get("cursor")
-	afterValue, afterID, ok := decodeCursor(cursor, sort)
-	if cursor != "" && !ok {
-		writeProblem(w, http.StatusBadRequest, "invalid_cursor", "The cursor is not valid.")
-		return
-	}
-
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	// A database would do this with ORDER BY and an index. Here: filter, sort, cut.
 	rows := make([]*Transaction, 0, len(a.transactions)) // never nil: nil encodes as null
 	for _, t := range a.transactions {
 		if status != "" && t.Status != status || operator != "" && t.Operator != operator {
 			continue
 		}
-		if cursor != "" && order(sortValue(t), t.ID, afterValue, afterID) <= 0 {
-			continue // at or before the cursor: the client already has it
-		}
 		rows = append(rows, t)
 	}
-	slices.SortFunc(rows, func(x, y *Transaction) int {
-		return order(sortValue(x), x.ID, sortValue(y), y.ID)
-	})
-
-	result := page[*Transaction]{Items: rows}
-	if len(rows) > limit { // one more row exists, so there is a next page
-		last := rows[limit-1]
-		next := encodeCursor(sort, sortValue(last), last.ID)
-		result.Items, result.NextCursor = rows[:limit], &next
-	}
-	writeJSON(w, http.StatusOK, result)
+	writePage(w, r, transactionList, rows)
 }
 
 func (a *app) findTransaction(id string) *Transaction {
@@ -309,6 +398,15 @@ func (a *app) quotePayout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"amount": amount, "fee": fee, "total": amount + fee, "currency": currencyXOF})
 }
 
+var payoutList = listing[*Payout]{
+	id: func(p *Payout) string { return p.ID },
+	sorts: map[string]func(*Payout) int64{
+		"amount": func(p *Payout) int64 { return p.Amount },
+	},
+	// Ids count up, so "id" is the order of creation: newest first.
+	defaultSort: "-id",
+}
+
 func (a *app) listPayouts(w http.ResponseWriter, r *http.Request) {
 	status := r.URL.Query().Get("status")
 	if status != "" && !slices.Contains(payoutStatuses, status) {
@@ -319,13 +417,13 @@ func (a *app) listPayouts(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	result := page[*Payout]{Items: make([]*Payout, 0, len(a.payouts))}
+	rows := make([]*Payout, 0, len(a.payouts))
 	for _, p := range a.payouts {
 		if status == "" || p.Status == status {
-			result.Items = append(result.Items, p)
+			rows = append(rows, p)
 		}
 	}
-	writeJSON(w, http.StatusOK, result)
+	writePage(w, r, payoutList, rows)
 }
 
 func (a *app) findPayout(id string) *Payout {
